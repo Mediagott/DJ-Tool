@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#08080e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="DJ Song Finder — Erkennen · Empfehlen · Mixen">
+<title>DJ Song Finder</title>
+<link rel="manifest" href="data:application/json;base64,eyJuYW1lIjoiREogU29uZyBGaW5kZXIiLCJzaG9ydF9uYW1lIjoiREogRmluZGVyIiwic3RhcnRfdXJsIjoiLiIsImRpc3BsYXkiOiJzdGFuZGFsb25lIiwiYmFja2dyb3VuZF9jb2xvciI6IiMwODA4MGUiLCJ0aGVtZV9jb2xvciI6IiMwODA4MGUifQ==">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'IBM Plex Mono','Fira Code',monospace;background:linear-gradient(170deg,#08080e 0%,#0b0b18 40%,#10071d 100%);color:#d8d8e4;min-height:100vh;overflow-x:hidden}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(0,255,210,.15);border-radius:4px}
+input:focus,textarea:focus,select:focus{border-color:rgba(0,255,210,.3)!important;outline:none}
+a:hover{opacity:.85}button:hover{opacity:.92}
+@keyframes pulse{0%,100%{transform:scale(1);box-shadow:0 0 30px rgba(255,0,128,.3)}50%{transform:scale(1.04);box-shadow:0 0 50px rgba(255,0,128,.5)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.fade-in{animation:fadeIn .3s ease-out}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const {useState,useEffect,useRef,useCallback,useMemo}=React;
+
+// ═══════════════ CONSTANTS ═══════════════
+const TIDAL_SEARCH="https://listen.tidal.com/search?q=";
+const AUDD_URL="https://api.audd.io/";
+const CLAUDE_URL="https://api.anthropic.com/v1/messages";
+
+const CAMELOT_MAP={"Abm":"1A","G#m":"1A","B":"1B","Ebm":"2A","D#m":"2A","F#":"2B","Gb":"2B","Bbm":"3A","A#m":"3A","Db":"3B","C#":"3B","Fm":"4A","Ab":"4B","G#":"4B","Cm":"5A","Eb":"5B","D#":"5B","Gm":"6A","Bb":"6B","A#":"6B","Dm":"7A","F":"7B","Am":"8A","C":"8B","Em":"9A","G":"9B","Bm":"10A","D":"10B","F#m":"11A","Gbm":"11A","A":"11B","C#m":"12A","Dbm":"12A","E":"12B"};
+const CAMELOT_COLORS={"1A":"#e74c3c","1B":"#ff6b6b","2A":"#e67e22","2B":"#f5a623","3A":"#f1c40f","3B":"#ffe066","4A":"#a6d608","4B":"#c8e64a","5A":"#2ecc71","5B":"#6deca9","6A":"#1abc9c","6B":"#56edd8","7A":"#00bcd4","7B":"#4dd9e8","8A":"#3498db","8B":"#6cb4ee","9A":"#5b6abf","9B":"#8b9bef","10A":"#9b59b6","10B":"#c084e0","11A":"#e84393","11B":"#f78fb3","12A":"#d63031","12B":"#ff7675"};
+const CUE_TYPES=["mix-in","mix-out","drop","breakdown","vocal-start","vocal-end","build-up","custom"];
+const CUE_COLORS={"mix-in":"#00ffd2","mix-out":"#00bcd4","drop":"#ff0080","breakdown":"#9b59b6","vocal-start":"#f1c40f","vocal-end":"#f39c12","build-up":"#e74c3c","custom":"#888"};
+
+// ═══════════════ HELPERS ═══════════════
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+const keyToCamelot=k=>{if(!k)return null;const c=k.replace(/\s+/g,"").replace("minor","m").replace("min","m").replace("major","").replace("maj","");return CAMELOT_MAP[c]||null;};
+const parseCam=c=>{if(!c)return null;const m=c.match(/^(\d{1,2})([AB])$/);return m?{n:+m[1],l:m[2]}:null;};
+const circDiff=(a,b)=>{const d=Math.abs(a-b)%12;return Math.min(d,12-d);};
+const bpmToVdj=b=>b>0?(60/b).toFixed(6):"0.500000";
+const esc=s=>s?s.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;").replace(/>/g,"&gt;"):"";
+
+function getKeyCompat(c1,c2,mode="standard"){
+  const a=parseCam(c1),b=parseCam(c2);if(!a||!b)return"unknown";
+  const d=circDiff(a.n,b.n),sl=a.l===b.l;
+  if(d===0&&sl)return"perfect";if(d===0&&!sl)return mode!=="standard"?"perfect":"good";
+  if(d===1&&sl)return"perfect";if(d===1&&!sl)return"good";
+  if(d===2&&sl)return mode==="fuzzy-full"?"good":"possible";
+  if(d===7)return"possible";return"clash";
+}
+
+function calcTransition(a,b,mode="standard"){
+  const kc=getKeyCompat(a.camelotKey,b.camelotKey,mode);
+  const kp={perfect:100,good:75,possible:50,clash:10,unknown:50}[kc];
+  const bd=Math.abs((a.bpm||120)-(b.bpm||120));
+  const bp=bd<=2?100:bd<=5?80:bd<=10?50:bd<=20?25:0;
+  const ed=Math.abs((a.energy||5)-(b.energy||5));
+  const ep=ed<=2?100:ed<=4?70:30;
+  const t=kp*.4+bp*.35+ep*.25;
+  return{score:Math.round(t),color:t>=75?"green":t>=45?"yellow":"red",keyCompat:kc};
+}
+
+function estimateMeta(g=""){
+  const l=g.toLowerCase();
+  if(l.includes("techno"))return{bpm:138,energy:8};if(l.includes("house")||l.includes("disco"))return{bpm:124,energy:7};
+  if(l.includes("trance"))return{bpm:140,energy:8};if(l.includes("hip")||l.includes("rap"))return{bpm:95,energy:6};
+  if(l.includes("drum")||l.includes("jungle"))return{bpm:174,energy:9};if(l.includes("pop"))return{bpm:118,energy:5};
+  if(l.includes("rock"))return{bpm:128,energy:7};if(l.includes("edm")||l.includes("electro"))return{bpm:128,energy:8};
+  if(l.includes("latin")||l.includes("reggaeton"))return{bpm:96,energy:7};return{bpm:120,energy:5};
+}
+
+function makeSong(raw){
+  const est=estimateMeta(raw.genre||"");const cam=keyToCamelot(raw.key);
+  return{id:raw.id||uid(),title:raw.title||"Unbekannt",artist:raw.artist||"Unbekannt",album:raw.album||"",genre:raw.genre||"",year:raw.year||"",
+    bpm:raw.bpm||est.bpm,bpmVdj:bpmToVdj(raw.bpm||est.bpm),bpmSource:raw.bpmSource||"manual",key:raw.key||null,camelotKey:cam,
+    energy:raw.energy||est.energy,energySource:"ai",hasVocals:null,vocalSections:[],
+    tidalUrl:TIDAL_SEARCH+encodeURIComponent(`${raw.artist||""} ${raw.title||""}`),tidalId:null,
+    artwork:raw.artwork||"",notes:"",cuePoints:[],tags:[],rating:0,color:null,playCount:0,lastPlayed:null,
+    addedAt:new Date().toISOString(),vdjFilePath:null,songLength:raw.songLength||null};
+}
+
+// ═══════════════ STORAGE (localStorage) ═══════════════
+const LS={
+  get(k,d){try{const v=localStorage.getItem("djsf-"+k);return v?JSON.parse(v):d;}catch{return d;}},
+  set(k,v){try{localStorage.setItem("djsf-"+k,JSON.stringify(v));}catch{}}
+};
+
+// ═══════════════ COMPONENTS ═══════════════
+
+function Visualizer({listening,analyserRef}){
+  const ref=useRef(null),anim=useRef(null);
+  useEffect(()=>{
+    const c=ref.current;if(!c)return;const ctx=c.getContext("2d");c.width=260;c.height=70;
+    const draw=()=>{anim.current=requestAnimationFrame(draw);ctx.clearRect(0,0,260,70);
+      const an=analyserRef.current;
+      if(an&&listening){const buf=new Uint8Array(an.frequencyBinCount);an.getByteFrequencyData(buf);
+        for(let i=0;i<40;i++){const v=buf[Math.floor(i*buf.length/40)]/255,h=v*60;
+          const g=ctx.createLinearGradient(0,70-h,0,70);g.addColorStop(0,`rgba(0,255,210,${.3+v*.7})`);g.addColorStop(1,`rgba(255,0,128,${.2+v*.5})`);
+          ctx.fillStyle=g;ctx.fillRect(i*6.5,70-h,5,h);}
+      }else{for(let i=0;i<40;i++){const v=Math.sin(Date.now()/1000*1.5+i*.3)*.12+.15;
+        ctx.fillStyle=`rgba(0,255,210,${v*.5})`;ctx.fillRect(i*6.5,70-v*70,5,v*70);}}};
+    draw();return()=>cancelAnimationFrame(anim.current);
+  },[listening,analyserRef]);
+  return <canvas ref={ref} style={{width:"100%",maxWidth:260,height:70,display:"block",margin:"0 auto"}}/>;
+}
+
+function BpmTap({onBpmDetected}){
+  const[taps,setTaps]=useState([]);const[bpm,setBpm]=useState(null);
+  const tap=()=>{const now=Date.now();setTaps(prev=>{
+    const next=prev.length>0&&now-prev[prev.length-1]>3000?[now]:[...prev,now].slice(-12);
+    if(next.length>=3){const ints=[];for(let i=1;i<next.length;i++)ints.push(next[i]-next[i-1]);
+      const avg=ints.reduce((a,b)=>a+b,0)/ints.length;const d=Math.round(60000/avg);setBpm(d);
+      if(next.length>=4&&onBpmDetected)onBpmDetected(d);}return next;});};
+  return(<div style={{display:"flex",alignItems:"center",gap:8}}>
+    <button onClick={tap} style={{...css.chip,background:"rgba(255,0,128,.12)",color:"#ff0080",border:"1px solid rgba(255,0,128,.2)",fontWeight:700,minWidth:80,padding:"8px 14px",fontSize:13}}>
+      TAP {bpm?`(${bpm})`:""}
+    </button>
+    {taps.length>0&&<button onClick={()=>{setTaps([]);setBpm(null);}} style={{...css.chip,color:"#666",fontSize:10}}>Reset</button>}
+    {taps.length>0&&taps.length<4&&<span style={{fontSize:10,color:"#555"}}>Noch {4-taps.length}x...</span>}
+  </div>);
+}
+
+function CamelotBadge({k,size="normal"}){
+  if(!k)return null;const bg=CAMELOT_COLORS[k]||"#555";
+  const s=size==="small"?{fontSize:9,padding:"1px 5px"}:{fontSize:11,padding:"2px 8px"};
+  return<span style={{...s,borderRadius:12,fontWeight:800,background:bg+"22",color:bg,border:`1px solid ${bg}44`,letterSpacing:".5px",whiteSpace:"nowrap"}}>{k}</span>;
+}
+
+function EnergySlider({value,onChange}){
+  const cl=["#1a5276","#1f6f8b","#1e8449","#52be80","#82e0aa","#f4d03f","#f5b041","#eb984e","#e74c3c","#c0392b"];
+  return(<div style={{display:"flex",alignItems:"center",gap:8}}>
+    <span style={{fontSize:10,color:"#666",width:50}}>Energie</span>
+    <input type="range" min="1" max="10" value={value||5} onChange={e=>onChange(+e.target.value)} style={{flex:1,accentColor:cl[(value||5)-1],height:4}}/>
+    <span style={{fontSize:13,fontWeight:800,color:cl[(value||5)-1],width:22,textAlign:"right"}}>{value||5}</span>
+  </div>);
+}
+
+function TransBadge({from,to,mode}){
+  if(!from||!to)return null;const t=calcTransition(from,to,mode);
+  const col={green:"#00ffd2",yellow:"#f1c40f",red:"#ff4444"}[t.color];
+  return<span style={{display:"inline-flex",alignItems:"center",gap:3,fontSize:9,padding:"1px 6px",borderRadius:8,background:col+"15",color:col,fontWeight:700}}>
+    {t.color==="green"?"●":t.color==="yellow"?"◐":"○"} {t.score}%</span>;
+}
+
+function CueEditor({cuePoints=[],onChange}){
+  const[adding,setAdding]=useState(false);
+  const[nc,setNc]=useState({time:"",label:"",type:"custom",note:""});
+  const add=()=>{if(!nc.time)return;const p=nc.time.split(":");
+    const sec=p.length===2?+p[0]*60+ +p[1]:parseFloat(nc.time);
+    onChange([...cuePoints,{id:uid(),time:nc.time,timeSeconds:sec,label:nc.label||nc.type,type:nc.type,color:CUE_COLORS[nc.type],note:nc.note}]);
+    setNc({time:"",label:"",type:"custom",note:""});setAdding(false);};
+  return(<div>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+      <span style={{fontSize:10,color:"#666",textTransform:"uppercase",letterSpacing:1,fontWeight:700}}>Cue Points</span>
+      <button onClick={()=>setAdding(!adding)} style={{...css.chip,fontSize:10,padding:"2px 8px",background:"rgba(0,255,210,.08)",color:"#00ffd2"}}>{adding?"Abbrechen":"+ Cue"}</button>
+    </div>
+    {adding&&<div style={{background:"rgba(255,255,255,.02)",borderRadius:8,padding:10,marginBottom:8,border:"1px solid rgba(255,255,255,.06)"}}>
+      <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
+        <input placeholder="Zeit (2:30)" value={nc.time} onChange={e=>setNc({...nc,time:e.target.value})} style={{...css.inputSm,width:80}}/>
+        <input placeholder="Label" value={nc.label} onChange={e=>setNc({...nc,label:e.target.value})} style={{...css.inputSm,flex:1}}/>
+        <select value={nc.type} onChange={e=>setNc({...nc,type:e.target.value})} style={{...css.inputSm,width:100}}>
+          {CUE_TYPES.map(t=><option key={t} value={t}>{t}</option>)}</select>
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <input placeholder="Notiz" value={nc.note} onChange={e=>setNc({...nc,note:e.target.value})} style={{...css.inputSm,flex:1}}/>
+        <button onClick={add} style={{...css.chip,background:"rgba(0,255,210,.15)",color:"#00ffd2",fontWeight:700}}>+</button>
+      </div>
+    </div>}
+    {cuePoints.sort((a,b)=>a.timeSeconds-b.timeSeconds).map(c=>
+      <div key={c.id} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",borderBottom:"1px solid rgba(255,255,255,.03)"}}>
+        <span style={{fontSize:11,fontWeight:700,color:c.color||"#888",minWidth:38}}>{c.time}</span>
+        <span style={{fontSize:9,padding:"1px 6px",borderRadius:8,background:(c.color||"#888")+"18",color:c.color||"#888",fontWeight:600}}>{c.type}</span>
+        <span style={{fontSize:11,color:"#aaa",flex:1}}>{c.label}{c.note?` — ${c.note}`:""}</span>
+        <button onClick={()=>onChange(cuePoints.filter(x=>x.id!==c.id))} style={{background:"none",border:"none",color:"#ff4444",cursor:"pointer",fontSize:14,padding:"0 4px"}}>×</button>
+      </div>
+    )}
+    {cuePoints.length===0&&!adding&&<div style={{fontSize:11,color:"#444",padding:"6px 0"}}>Keine Cue-Points</div>}
+  </div>);
+}
+
+// ═══════════════ SONG CARD ═══════════════
+function SongCard({song,onUpdate,onAdd,mode}){
+  const[exp,setExp]=useState(false);const[notes,setNotes]=useState(song.notes||"");
+  return(<div style={css.card} className="fade-in">
+    <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+      {song.artwork&&<img src={song.artwork} alt="" style={{width:52,height:52,borderRadius:10,objectFit:"cover",flexShrink:0}}/>}
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:15,fontWeight:700,color:"#fff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:2}}>{song.title}</div>
+        <div style={{fontSize:12,color:"#777",marginBottom:6}}>{song.artist}</div>
+        <div style={{display:"flex",flexWrap:"wrap",gap:4,alignItems:"center"}}>
+          {song.bpm&&<span style={css.badge("cyan")}>{song.bpm} BPM</span>}
+          <CamelotBadge k={song.camelotKey} size="small"/>
+          {song.energy&&<span style={css.badge("pink")}>E{song.energy}</span>}
+          {song.genre&&<span style={css.badge("gray")}>{song.genre}</span>}
+        </div>
+      </div>
+    </div>
+    <div style={{display:"flex",gap:6,marginTop:10,flexWrap:"wrap",alignItems:"center"}}>
+      <a href={song.tidalUrl} target="_blank" rel="noopener noreferrer" style={css.tidal}><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004zM4.004 3.992L0 7.996 4.004 12 8.008 7.996zM20 3.992l-4.004 4.004L20 12l4-4.004zM12.012 12l-4.004 4.004 4.004 4.004 4.004-4.004z"/></svg> TIDAL</a>
+      <button style={css.addPl} onClick={()=>onAdd&&onAdd(song)}>+ Playlist</button>
+      <button style={{...css.chip,fontSize:10,color:exp?"#00ffd2":"#555"}} onClick={()=>setExp(!exp)}>{exp?"▲ Weniger":"▼ Details"}</button>
+    </div>
+    {exp&&<div style={{marginTop:12,borderTop:"1px solid rgba(255,255,255,.05)",paddingTop:12}}>
+      <EnergySlider value={song.energy} onChange={e=>onUpdate&&onUpdate({...song,energy:e})}/>
+      <div style={{marginTop:10}}>
+        <BpmTap onBpmDetected={bpm=>onUpdate&&onUpdate({...song,bpm,bpmVdj:bpmToVdj(bpm),bpmSource:"tap"})}/>
+      </div>
+      <div style={{marginTop:10}}>
+        <span style={css.label}>Notizen</span>
+        <textarea value={notes} onChange={e=>setNotes(e.target.value)} onBlur={()=>onUpdate&&onUpdate({...song,notes})} placeholder="z.B. Guter Opener, Drop bei 2:30..."
+          style={{...css.input,height:50,resize:"vertical",marginTop:4}}/>
+      </div>
+      <div style={{marginTop:10}}>
+        <CueEditor cuePoints={song.cuePoints||[]} onChange={cp=>onUpdate&&onUpdate({...song,cuePoints:cp})}/>
+      </div>
+    </div>}
+  </div>);
+}
+
+// ═══════════════ MANUAL SONG INPUT ═══════════════
+function ManualSongInput({onAdd}){
+  const[show,setShow]=useState(false);
+  const[form,setForm]=useState({title:"",artist:"",genre:"",key:"",bpm:"",energy:""});
+  const KEYS=["","C","C#","D","Eb","E","F","F#","G","Ab","A","Bb","B","Am","Bm","C#m","Dm","Em","Fm","F#m","Gm","Abm","Bbm","Cm","Ebm"];
+  const submit=()=>{
+    if(!form.title.trim()||!form.artist.trim())return;
+    const song=makeSong({title:form.title.trim(),artist:form.artist.trim(),genre:form.genre,key:form.key||null,
+      bpm:form.bpm?+form.bpm:null,energy:form.energy?+form.energy:null,bpmSource:"manual"});
+    onAdd(song);setForm({title:"",artist:"",genre:"",key:"",bpm:"",energy:""});setShow(false);
+  };
+  if(!show)return<button onClick={()=>setShow(true)} style={{...css.primary,width:"100%",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+    <span style={{fontSize:18}}>+</span> Song manuell hinzufügen
+  </button>;
+  return(<div style={{...css.card,marginBottom:16}} className="fade-in">
+    <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:10}}>Song manuell eingeben</div>
+    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+      <input placeholder="Titel *" value={form.title} onChange={e=>setForm({...form,title:e.target.value})} style={css.input}/>
+      <input placeholder="Künstler *" value={form.artist} onChange={e=>setForm({...form,artist:e.target.value})} style={css.input}/>
+      <div style={{display:"flex",gap:8}}>
+        <input placeholder="Genre" value={form.genre} onChange={e=>setForm({...form,genre:e.target.value})} style={{...css.input,flex:1}}/>
+        <select value={form.key} onChange={e=>setForm({...form,key:e.target.value})} style={{...css.input,width:90}}>
+          {KEYS.map(k=><option key={k} value={k}>{k||"Key..."}</option>)}
+        </select>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <input placeholder="BPM" type="number" value={form.bpm} onChange={e=>setForm({...form,bpm:e.target.value})} style={{...css.input,width:80}}/>
+        <input placeholder="Energie (1-10)" type="number" min="1" max="10" value={form.energy} onChange={e=>setForm({...form,energy:e.target.value})} style={{...css.input,width:110}}/>
+        <div style={{flex:1}}/>
+      </div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={submit} style={{...css.primary,flex:1}}>Hinzufügen</button>
+        <button onClick={()=>setShow(false)} style={{...css.secondary,flex:1}}>Abbrechen</button>
+      </div>
+    </div>
+  </div>);
+}
+
+// ═══════════════ MAIN APP ═══════════════
+function App(){
+  const[tab,setTab]=useState("recognize");
+  const[listening,setListening]=useState(false);
+  const[recognized,setRecognized]=useState(null);
+  const[recs,setRecs]=useState([]);
+  const[loadingRec,setLoadingRec]=useState(false);
+  const[playlists,setPlaylists]=useState([]);
+  const[history,setHistory]=useState([]);
+  const[apiKey,setApiKey]=useState("");
+  const[apiKeyInput,setApiKeyInput]=useState("");
+  const[status,setStatus]=useState("Bereit zum Erkennen");
+  const[error,setError]=useState("");
+  const[selPl,setSelPl]=useState(null);
+  const[newPlName,setNewPlName]=useState("");
+  const[addToPl,setAddToPl]=useState(null);
+  const[settings,setSettings]=useState({keyMatchMode:"fuzzy",vdjExport:"both"});
+  const analyserRef=useRef(null);const mediaRef=useRef(null);const streamRef=useRef(null);const audioRef=useRef(null);
+
+  useEffect(()=>{
+    setPlaylists(LS.get("playlists",[]));setHistory(LS.get("history",[]));
+    setApiKey(LS.get("audd-key",""));setApiKeyInput(LS.get("audd-key",""));
+    setSettings(LS.get("settings",{keyMatchMode:"fuzzy",vdjExport:"both"}));
+  },[]);
+
+  const saveHist=(h)=>{setHistory(h);LS.set("history",h);};
+  const savePl=(p)=>{setPlaylists(p);LS.set("playlists",p);};
+  const saveSets=(s)=>{setSettings(s);LS.set("settings",s);};
+
+  // ─── RECOGNITION ───
+  const startListening=useCallback(async()=>{
+    if(!apiKey){setError("Bitte AudD API-Key in Einstellungen eingeben.");setTab("settings");return;}
+    setError("");setRecognized(null);setRecs([]);
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});streamRef.current=stream;
+      const ctx=new(window.AudioContext||window.webkitAudioContext)();audioRef.current=ctx;
+      const src=ctx.createMediaStreamSource(stream);const an=ctx.createAnalyser();an.fftSize=256;src.connect(an);analyserRef.current=an;
+      const rec=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported("audio/webm")?"audio/webm":"audio/mp4"});
+      mediaRef.current=rec;const chunks=[];
+      rec.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
+      rec.onstop=async()=>{setStatus("Wird analysiert...");
+        const blob=new Blob(chunks,{type:rec.mimeType});const fd=new FormData();
+        fd.append("file",blob,"rec.webm");fd.append("api_token",apiKey);fd.append("return","apple_music,spotify");
+        try{const resp=await fetch(AUDD_URL,{method:"POST",body:fd});const data=await resp.json();
+          if(data.status==="success"&&data.result){const r=data.result;
+            const genre=r.genre||(r.apple_music?.genreNames?.[0])||"";
+            const song=makeSong({title:r.title,artist:r.artist,album:r.album,genre,key:r.apple_music?.genreNames?null:null,
+              year:r.release_date?.substring(0,4),artwork:r.apple_music?.artwork?.url?.replace("{w}","300").replace("{h}","300")||r.spotify?.album?.images?.[0]?.url||""});
+            setRecognized(song);setStatus("Song erkannt!");
+            const nh=[song,...history.filter(h=>!(h.title===song.title&&h.artist===song.artist))].slice(0,50);saveHist(nh);
+            fetchRecs(song);
+          }else setStatus("Kein Song erkannt — versuche es nochmal.");
+        }catch(err){setError("API-Fehler: "+err.message);setStatus("Fehler");}};
+      rec.start();setListening(true);setStatus("Höre zu... (10 Sek.)");
+      setTimeout(()=>stopListening(),10000);
+    }catch(err){setError("Mikrofon: "+err.message);}
+  },[apiKey,history]);
+
+  const stopListening=useCallback(()=>{
+    if(mediaRef.current?.state!=="inactive")mediaRef.current?.stop();
+    streamRef.current?.getTracks().forEach(t=>t.stop());
+    audioRef.current?.close().catch(()=>{});setListening(false);
+  },[]);
+
+  // ─── AI RECS ───
+  const fetchRecs=async(song)=>{
+    setLoadingRec(true);setRecs([]);
+    try{const resp=await fetch(CLAUDE_URL,{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
+        messages:[{role:"user",content:`Du bist ein DJ-Berater. Song:
+Titel: ${song.title} | Artist: ${song.artist} | Genre: ${song.genre||"unbekannt"}
+BPM: ${song.bpm} | Key: ${song.key||"unbekannt"} | Camelot: ${song.camelotKey||"unbekannt"} | Energie: ${song.energy}/10
+
+Empfehle 5 Songs für DJ-Set-Übergang:
+- Ähnliches BPM (±5), harmonisch kompatibel (Camelot ±1), ähnliche Energie (±2), mit Variation
+
+Antworte NUR mit JSON-Array (keine Backticks):
+[{"title":"","artist":"","genre":"","bpm":0,"key":"","energy":0,"reason":"Deutsch"}]`}]})});
+      const data=await resp.json();const text=data.content?.map(c=>c.text||"").join("")||"";
+      const parsed=JSON.parse(text.replace(/```json|```/g,"").trim());
+      setRecs(parsed.map(r=>({...r,camelotKey:keyToCamelot(r.key),tidalUrl:TIDAL_SEARCH+encodeURIComponent(`${r.artist} ${r.title}`)})));
+    }catch(err){console.error(err);setRecs([]);}
+    setLoadingRec(false);
+  };
+
+  // ─── MANUAL SONG → Recognize ───
+  const handleManualSong=(song)=>{
+    setRecognized(song);
+    const nh=[song,...history.filter(h=>!(h.title===song.title&&h.artist===song.artist))].slice(0,50);saveHist(nh);
+    fetchRecs(song);
+  };
+
+  // ─── PLAYLISTS ───
+  const createPl=()=>{if(!newPlName.trim())return;
+    const u=[...playlists,{id:uid(),name:newPlName.trim(),songs:[],created:new Date().toISOString(),type:"standard"}];
+    savePl(u);setNewPlName("");};
+  const deletePl=id=>{savePl(playlists.filter(p=>p.id!==id));if(selPl===id)setSelPl(null);};
+  const addSongPl=(plId,song)=>{savePl(playlists.map(p=>p.id===plId?(p.songs.some(s=>s.title===song.title&&s.artist===song.artist)?p:{...p,songs:[...p.songs,song]}):p));setAddToPl(null);};
+  const rmSongPl=(plId,idx)=>{savePl(playlists.map(p=>p.id===plId?{...p,songs:[...p.songs.slice(0,idx),...p.songs.slice(idx+1)]}:p));};
+
+  // ─── VDJ EXPORT ───
+  const exportVDJ=(pl)=>{
+    let db='<?xml version="1.0" encoding="UTF-8"?>\n<VirtualDJ_Database Version="8.2">\n';
+    pl.songs.forEach(s=>{db+=` <Song FilePath="${esc(s.artist)} - ${esc(s.title)}.mp3" FileSize="0">\n`;
+      db+=`  <Tags Author="${esc(s.artist)}" Title="${esc(s.title)}" Genre="${esc(s.genre||"")}" Bpm="${bpmToVdj(s.bpm||120)}" Flag="1" />\n`;
+      db+=`  <Scan Version="801" Bpm="${bpmToVdj(s.bpm||120)}" AltBpm="${bpmToVdj((s.bpm||120)/2)}" Volume="1.000000" Key="${s.key||""}" Flag="32768" />\n`;
+      if(s.cuePoints)s.cuePoints.forEach((c,i)=>{db+=`  <Poi Name="${esc(c.label)}" Pos="${c.timeSeconds.toFixed(6)}" Num="${i+1}" />\n`;});
+      db+=`  <Comment>${esc(s.notes||"")}</Comment>\n`;db+=` </Song>\n`;});
+    db+='</VirtualDJ_Database>';dlFile(db,`${pl.name.replace(/\s+/g,"_")}_database.xml`,"application/xml");
+    let m3u="#EXTM3U\n";pl.songs.forEach(s=>{m3u+=`#EXTINF:${s.songLength||240},${s.artist} - ${s.title}\n${s.artist} - ${s.title}.mp3\n`;});
+    dlFile(m3u,`${pl.name.replace(/\s+/g,"_")}.m3u`,"audio/x-mpegurl");
+  };
+  const dlFile=(content,name,mime)=>{const b=new Blob([content],{type:mime});const u=URL.createObjectURL(b);
+    const a=document.createElement("a");a.href=u;a.download=name;a.click();URL.revokeObjectURL(u);};
+
+  // ─── UPDATE SONG IN HISTORY ───
+  const updateSong=(updated)=>{
+    if(recognized&&recognized.id===updated.id)setRecognized(updated);
+    const nh=history.map(s=>s.id===updated.id?updated:s);saveHist(nh);
+  };
+
+  // ═══════════════ TAB CONTENT ═══════════════
+
+  const RecognizeTab=()=>(<div>
+    <ManualSongInput onAdd={handleManualSong}/>
+    <div style={{textAlign:"center",marginBottom:16}}>
+      <div style={{fontSize:10,color:"#555",textTransform:"uppercase",letterSpacing:1.5,marginBottom:10,fontWeight:700}}>oder Song per Mikrofon erkennen</div>
+      <button onClick={listening?stopListening:startListening} style={css.mic(listening)}>
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <div style={{marginTop:8,fontSize:11,color:listening?"#ff0080":"#00ffd2",fontWeight:600}}>{status}</div>
+      <Visualizer listening={listening} analyserRef={analyserRef}/>
+    </div>
+    {error&&<div style={css.errBox}>{error}</div>}
+    {recognized&&<>
+      <div style={css.label}>Erkannter Song</div>
+      <SongCard song={recognized} onUpdate={updateSong} onAdd={setAddToPl} mode={settings.keyMatchMode}/>
+      <div style={{...css.label,marginTop:20,display:"flex",alignItems:"center",gap:6}}>
+        <span style={{color:"#f1c40f"}}>★</span> AI Empfehlungen
+        <span style={{fontSize:9,color:"#444",fontWeight:400}}>Key: {settings.keyMatchMode}</span>
+      </div>
+      {loadingRec?<div style={{textAlign:"center",padding:20,color:"#555"}}>
+        <div style={{display:"inline-block",width:18,height:18,border:"2px solid rgba(0,255,210,.2)",borderTop:"2px solid #00ffd2",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>
+        <div style={{marginTop:6,fontSize:11}}>Suche passende Tracks...</div>
+      </div>:recs.map((r,i)=>
+        <div key={i} style={css.rec} className="fade-in">
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+              <span style={{fontSize:13,fontWeight:700,color:"#fff"}}>{r.title}</span>
+              <TransBadge from={recognized} to={r} mode={settings.keyMatchMode}/>
+            </div>
+            <div style={{fontSize:11,color:"#777",marginBottom:4}}>{r.artist}</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+              {r.bpm&&<span style={css.badge("cyan")}>{r.bpm} BPM</span>}
+              <CamelotBadge k={r.camelotKey} size="small"/>
+              {r.energy&&<span style={css.badge("pink")}>E{r.energy}</span>}
+            </div>
+            {r.reason&&<div style={{fontSize:10,color:"#555",marginTop:4,lineHeight:1.4}}>{r.reason}</div>}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:6,flexShrink:0,marginLeft:8}}>
+            <a href={r.tidalUrl} target="_blank" rel="noopener noreferrer" style={css.tidal}><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004zM4.004 3.992L0 7.996 4.004 12 8.008 7.996zM20 3.992l-4.004 4.004L20 12l4-4.004zM12.012 12l-4.004 4.004 4.004 4.004 4.004-4.004z"/></svg></a>
+            <button style={css.addPl} onClick={()=>setAddToPl(r)}>+</button>
+          </div>
+        </div>
+      )}
+    </>}
+  </div>);
+
+  const PlaylistsTab=()=>(<div>
+    <div style={{display:"flex",gap:8,marginBottom:16}}>
+      <input style={css.input} value={newPlName} onChange={e=>setNewPlName(e.target.value)} placeholder="Neue Playlist..." onKeyDown={e=>e.key==="Enter"&&createPl()}/>
+      <button style={css.primary} onClick={createPl}>+</button>
+    </div>
+    {selPl?(()=>{const pl=playlists.find(p=>p.id===selPl);if(!pl)return null;
+      return<div>
+        <button style={{...css.chip,marginBottom:12,color:"#888"}} onClick={()=>setSelPl(null)}>← Zurück</button>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <div><div style={{fontSize:17,fontWeight:800,color:"#fff"}}>{pl.name}</div>
+            <div style={{fontSize:11,color:"#555"}}>{pl.songs.length} Songs</div></div>
+          {pl.songs.length>0&&<button style={css.secondary} onClick={()=>exportVDJ(pl)}>VDJ Export</button>}
+        </div>
+        {pl.songs.length===0?<div style={{textAlign:"center",padding:30,color:"#555",fontSize:12}}>Keine Songs — füge Songs über Erkennen hinzu!</div>
+        :pl.songs.map((s,i)=>
+          <div key={i} style={{...css.rec,alignItems:"center"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:700,color:"#fff"}}>{s.title}</div>
+              <div style={{fontSize:11,color:"#777"}}>{s.artist}</div>
+              <div style={{display:"flex",gap:4,marginTop:3,alignItems:"center"}}>
+                {s.bpm&&<span style={css.badge("cyan")}>{s.bpm}</span>}
+                <CamelotBadge k={s.camelotKey} size="small"/>
+                {s.energy&&<span style={css.badge("pink")}>E{s.energy}</span>}
+                {i>0&&<TransBadge from={pl.songs[i-1]} to={s} mode={settings.keyMatchMode}/>}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:6,flexShrink:0}}>
+              <a href={s.tidalUrl} target="_blank" rel="noopener noreferrer" style={css.tidal}><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12.012 3.992L8.008 7.996 12.012 12l4.004-4.004zM4.004 3.992L0 7.996 4.004 12 8.008 7.996zM20 3.992l-4.004 4.004L20 12l4-4.004zM12.012 12l-4.004 4.004 4.004 4.004 4.004-4.004z"/></svg></a>
+              <button style={css.danger} onClick={()=>rmSongPl(pl.id,i)}>×</button>
+            </div>
+          </div>
+        )}
+      </div>;
+    })():playlists.length===0?<div style={{textAlign:"center",padding:30,color:"#555",fontSize:12}}>Erstelle deine erste Playlist!</div>
+    :playlists.map(pl=>
+      <div key={pl.id} style={{...css.rec,cursor:"pointer"}} onClick={()=>setSelPl(pl.id)}>
+        <div style={{flex:1}}><div style={{fontSize:14,fontWeight:700,color:"#fff"}}>{pl.name}</div>
+          <div style={{fontSize:11,color:"#555"}}>{pl.songs.length} Songs</div></div>
+        <div style={{display:"flex",gap:6}}>
+          {pl.songs.length>0&&<button style={css.secondary} onClick={e=>{e.stopPropagation();exportVDJ(pl);}}>Export</button>}
+          <button style={css.danger} onClick={e=>{e.stopPropagation();deletePl(pl.id);}}>×</button>
+        </div>
+      </div>
+    )}
+  </div>);
+
+  const HistoryTab=()=>(<div>
+    <div style={css.label}>Zuletzt erkannte / hinzugefügte Songs</div>
+    {history.length===0?<div style={{textAlign:"center",padding:30,color:"#555",fontSize:12}}>Noch keine Songs.</div>
+    :history.map((s,i)=><SongCard key={s.id||i} song={s} onUpdate={updateSong} onAdd={setAddToPl} mode={settings.keyMatchMode}/>)}
+  </div>);
+
+  const SettingsTab=()=>(<div>
+    <div style={css.label}>API Konfiguration</div>
+    <div style={css.card}>
+      <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:4}}>AudD API Key</div>
+      <div style={{fontSize:11,color:"#555",marginBottom:10,lineHeight:1.5}}>
+        Kostenlos bei <a href="https://audd.io" target="_blank" rel="noopener noreferrer" style={{color:"#00ffd2"}}>audd.io</a> registrieren (300/Tag).
+      </div>
+      <input style={css.input} type="password" value={apiKeyInput} onChange={e=>setApiKeyInput(e.target.value)} placeholder="AudD API Token..."/>
+      <button style={{...css.primary,marginTop:10}} onClick={()=>{setApiKey(apiKeyInput);LS.set("audd-key",apiKeyInput);setError("");}}>Speichern</button>
+      {apiKey&&<div style={{marginTop:8,fontSize:11,color:"#00ffd2"}}>✓ Gespeichert</div>}
+    </div>
+    <div style={{...css.label,marginTop:20}}>VirtualDJ</div>
+    <div style={css.card}>
+      <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:8}}>Key-Matching-Modus</div>
+      {["standard","fuzzy","fuzzy-full"].map(m=>
+        <label key={m} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 0",borderBottom:"1px solid rgba(255,255,255,.03)",cursor:"pointer"}}>
+          <input type="radio" name="km" checked={settings.keyMatchMode===m} onChange={()=>saveSets({...settings,keyMatchMode:m})} style={{accentColor:"#00ffd2"}}/>
+          <div><div style={{fontSize:12,fontWeight:600,color:settings.keyMatchMode===m?"#00ffd2":"#aaa"}}>
+            {m==="standard"?"Standard":m==="fuzzy"?"Fuzzy":"Fuzzy Full"}</div>
+            <div style={{fontSize:10,color:"#555"}}>{m==="standard"?"±1 Halbton":m==="fuzzy"?"+ Major↔Minor":"±2 Halbtöne"}</div>
+          </div>
+        </label>
+      )}
+    </div>
+    <div style={{...css.card,marginTop:12}}>
+      <div style={{fontSize:13,fontWeight:700,color:"#fff",marginBottom:4}}>Info</div>
+      <div style={{fontSize:11,color:"#555",lineHeight:1.6}}>
+        <strong style={{color:"#aaa"}}>DJ Song Finder v1.0 — Phase 1</strong><br/>
+        Song-Erkennung · Manuelle Eingabe · AI-Empfehlungen mit Camelot · BPM-Tap · Notizen · Cue-Points · Energie · VDJ-Export · TIDAL · PWA
+      </div>
+    </div>
+  </div>);
+
+  // ═══════════════ RENDER ═══════════════
+  const TABS=[{id:"recognize",label:"Erkennen",icon:"🎤"},{id:"playlists",label:"Playlists",icon:"📋"},
+    {id:"history",label:"Verlauf",icon:"⏱"},{id:"settings",label:"Einstell.",icon:"⚙"}];
+
+  return(<div>
+    <div style={css.header}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        <div>
+          <h1 style={css.logo}>DJ Song Finder</h1>
+          <div style={css.sub}>Erkennen · Empfehlen · Mixen</div>
+        </div>
+        <div style={{display:"flex",gap:4}}>
+          <span style={{fontSize:9,padding:"2px 6px",borderRadius:6,background:"rgba(0,255,210,.08)",color:"#00ffd2",fontWeight:700}}>v1.0</span>
+          <span style={{fontSize:9,padding:"2px 6px",borderRadius:6,background:"rgba(255,0,128,.08)",color:"#ff0080",fontWeight:700}}>PWA</span>
+        </div>
+      </div>
+    </div>
+    <div style={css.nav}>
+      {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={css.navBtn(tab===t.id)}>
+        <span style={{fontSize:16}}>{t.icon}</span>
+        <span style={{fontSize:9,marginTop:1}}>{t.label}</span>
+      </button>)}
+    </div>
+    <div style={css.content}>
+      {tab==="recognize"&&<RecognizeTab/>}
+      {tab==="playlists"&&<PlaylistsTab/>}
+      {tab==="history"&&<HistoryTab/>}
+      {tab==="settings"&&<SettingsTab/>}
+    </div>
+    {addToPl&&<div style={css.modal} onClick={()=>setAddToPl(null)}>
+      <div style={css.modalC} onClick={e=>e.stopPropagation()}>
+        <div style={{fontSize:15,fontWeight:800,color:"#fff",marginBottom:4}}>Zu Playlist hinzufügen</div>
+        <div style={{fontSize:11,color:"#777",marginBottom:14}}>„{addToPl.title}" — {addToPl.artist}</div>
+        {playlists.length===0?<div style={{color:"#555",fontSize:12,padding:16,textAlign:"center"}}>Erstelle zuerst eine Playlist.</div>
+        :playlists.map(pl=><button key={pl.id} onClick={()=>addSongPl(pl.id,addToPl)}
+          style={{display:"flex",justifyContent:"space-between",width:"100%",padding:"10px 12px",marginBottom:6,borderRadius:8,border:"1px solid rgba(0,255,210,.1)",background:"rgba(0,255,210,.03)",color:"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:600,textAlign:"left"}}>
+          <span>{pl.name}</span><span style={{fontSize:11,color:"#555"}}>{pl.songs.length}</span>
+        </button>)}
+        <button onClick={()=>setAddToPl(null)} style={{...css.secondary,width:"100%",marginTop:10}}>Abbrechen</button>
+      </div>
+    </div>}
+  </div>);
+}
+
+// ═══════════════ STYLES ═══════════════
+const css={
+  header:{padding:"16px 20px 10px",borderBottom:"1px solid rgba(0,255,210,.06)"},
+  logo:{fontSize:22,fontWeight:900,fontFamily:"'Outfit',sans-serif",letterSpacing:"-1px",background:"linear-gradient(135deg,#00ffd2,#ff0080)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",margin:0,lineHeight:1.2},
+  sub:{fontSize:10,color:"#444",letterSpacing:"2px",textTransform:"uppercase",marginTop:2},
+  nav:{display:"flex",gap:2,padding:"8px 16px",borderBottom:"1px solid rgba(255,255,255,.03)",justifyContent:"space-around"},
+  navBtn:a=>({display:"flex",flexDirection:"column",alignItems:"center",gap:1,padding:"6px 14px",border:"none",borderRadius:8,cursor:"pointer",fontSize:11,fontFamily:"inherit",fontWeight:a?700:500,background:a?"rgba(0,255,210,.1)":"transparent",color:a?"#00ffd2":"#555",transition:"all .2s"}),
+  content:{padding:"16px 20px",paddingBottom:60},
+  card:{background:"rgba(255,255,255,.025)",borderRadius:12,padding:14,border:"1px solid rgba(0,255,210,.08)",marginBottom:10},
+  rec:{display:"flex",justifyContent:"space-between",alignItems:"center",background:"rgba(255,255,255,.015)",borderRadius:10,padding:10,border:"1px solid rgba(255,255,255,.04)",marginBottom:6},
+  badge:c=>({display:"inline-block",padding:"1px 7px",borderRadius:10,fontSize:9,fontWeight:700,letterSpacing:".3px",background:c==="cyan"?"rgba(0,255,210,.1)":c==="pink"?"rgba(255,0,128,.1)":"rgba(255,255,255,.05)",color:c==="cyan"?"#00ffd2":c==="pink"?"#ff0080":"#666"}),
+  tidal:{display:"inline-flex",alignItems:"center",gap:4,padding:"4px 10px",borderRadius:6,border:"1px solid rgba(0,255,210,.15)",background:"rgba(0,255,210,.04)",color:"#00ffd2",cursor:"pointer",fontSize:10,fontFamily:"inherit",fontWeight:600,textDecoration:"none"},
+  addPl:{display:"inline-flex",alignItems:"center",gap:3,padding:"4px 8px",borderRadius:6,border:"1px solid rgba(255,0,128,.15)",background:"rgba(255,0,128,.04)",color:"#ff0080",cursor:"pointer",fontSize:10,fontFamily:"inherit",fontWeight:600},
+  chip:{padding:"4px 10px",borderRadius:6,border:"1px solid rgba(255,255,255,.06)",background:"transparent",cursor:"pointer",fontSize:11,fontFamily:"inherit",color:"#777"},
+  primary:{padding:"8px 16px",borderRadius:8,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#00ffd2,#00ccaa)",color:"#080810",fontSize:13,fontFamily:"inherit",fontWeight:700},
+  secondary:{padding:"6px 12px",borderRadius:6,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#999",cursor:"pointer",fontSize:11,fontFamily:"inherit",fontWeight:600},
+  danger:{padding:"4px 8px",borderRadius:6,border:"none",cursor:"pointer",background:"rgba(255,60,60,.08)",color:"#ff4444",fontSize:14,fontWeight:700},
+  input:{width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid rgba(255,255,255,.08)",background:"rgba(255,255,255,.03)",color:"#d8d8e4",fontSize:12,fontFamily:"inherit",outline:"none",boxSizing:"border-box"},
+  inputSm:{padding:"5px 8px",borderRadius:6,border:"1px solid rgba(255,255,255,.06)",background:"rgba(255,255,255,.02)",color:"#d8d8e4",fontSize:11,fontFamily:"inherit",outline:"none",boxSizing:"border-box"},
+  label:{fontSize:10,color:"#444",textTransform:"uppercase",letterSpacing:"1.5px",marginBottom:8,fontWeight:700},
+  errBox:{background:"rgba(255,60,60,.08)",border:"1px solid rgba(255,60,60,.15)",borderRadius:10,padding:10,marginBottom:12,fontSize:11,color:"#ff6666"},
+  mic:l=>({width:90,height:90,borderRadius:"50%",border:"none",cursor:"pointer",background:l?"radial-gradient(circle,rgba(255,0,128,.25) 0%,rgba(255,0,128,.03) 70%)":"radial-gradient(circle,rgba(0,255,210,.12) 0%,rgba(0,255,210,.01) 70%)",color:l?"#ff0080":"#00ffd2",boxShadow:l?"0 0 35px rgba(255,0,128,.25)":"0 0 30px rgba(0,255,210,.1)",display:"flex",alignItems:"center",justifyContent:"center",animation:l?"pulse 1.5s ease-in-out infinite":"none",transition:"all .3s"}),
+  modal:{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,.65)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100,backdropFilter:"blur(4px)"},
+  modalC:{background:"#12122a",borderRadius:14,padding:20,width:"90%",maxWidth:340,border:"1px solid rgba(0,255,210,.12)",maxHeight:"70vh",overflowY:"auto"},
+};
+
+ReactDOM.render(<App/>,document.getElementById("root"));
+</script>
+</body>
+</html>
